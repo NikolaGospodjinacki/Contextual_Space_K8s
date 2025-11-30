@@ -1,0 +1,276 @@
+# =============================================================================
+# Main Branch CI/CD Workflow
+# =============================================================================
+# Builds and deploys to production on main branch pushes
+# =============================================================================
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+  ECR_FRONTEND_REPO: ${{ secrets.ECR_FRONTEND_REPO }}
+  ECR_BACKEND_REPO: ${{ secrets.ECR_BACKEND_REPO }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    name: Build and Push Images
+    runs-on: ubuntu-latest
+    outputs:
+      frontend_image: ${{ steps.build-frontend.outputs.image }}
+      backend_image: ${{ steps.build-backend.outputs.image }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: github-actions-main
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push frontend
+        id: build-frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./apps/frontend
+          file: ./apps/frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ECR_FRONTEND_REPO }}:latest
+            ${{ env.ECR_FRONTEND_REPO }}:main-${{ github.sha }}
+          build-args: |
+            VITE_BASE_PATH=/
+            VITE_SOCKET_URL=
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push backend
+        id: build-backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./apps/backend
+          file: ./apps/backend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ECR_BACKEND_REPO }}:latest
+            ${{ env.ECR_BACKEND_REPO }}:main-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build
+    environment: production
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: github-actions-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+
+      - name: Create production namespace
+        run: |
+          kubectl create namespace production --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy to production
+        run: |
+          # Create ConfigMap
+          cat <<EOF | kubectl apply -n production -f -
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: app-config
+          data:
+            BASE_PATH: "/"
+            NODE_ENV: "production"
+          EOF
+
+          # Deploy Backend
+          cat <<EOF | kubectl apply -n production -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: backend
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: backend
+            template:
+              metadata:
+                labels:
+                  app: backend
+              spec:
+                containers:
+                  - name: backend
+                    image: ${{ env.ECR_BACKEND_REPO }}:main-${{ github.sha }}
+                    ports:
+                      - containerPort: 3001
+                    envFrom:
+                      - configMapRef:
+                          name: app-config
+                    env:
+                      - name: PORT
+                        value: "3001"
+                    resources:
+                      requests:
+                        memory: "256Mi"
+                        cpu: "200m"
+                      limits:
+                        memory: "512Mi"
+                        cpu: "500m"
+                    readinessProbe:
+                      httpGet:
+                        path: /health
+                        port: 3001
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
+                    livenessProbe:
+                      httpGet:
+                        path: /health
+                        port: 3001
+                      initialDelaySeconds: 15
+                      periodSeconds: 20
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: backend
+          spec:
+            selector:
+              app: backend
+            ports:
+              - port: 3001
+                targetPort: 3001
+          EOF
+
+          # Deploy Frontend
+          cat <<EOF | kubectl apply -n production -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: frontend
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: frontend
+            template:
+              metadata:
+                labels:
+                  app: frontend
+              spec:
+                containers:
+                  - name: frontend
+                    image: ${{ env.ECR_FRONTEND_REPO }}:main-${{ github.sha }}
+                    ports:
+                      - containerPort: 80
+                    resources:
+                      requests:
+                        memory: "128Mi"
+                        cpu: "100m"
+                      limits:
+                        memory: "256Mi"
+                        cpu: "200m"
+                    readinessProbe:
+                      httpGet:
+                        path: /
+                        port: 80
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: frontend
+          spec:
+            selector:
+              app: frontend
+            ports:
+              - port: 80
+                targetPort: 80
+          EOF
+
+          # Deploy Ingress
+          cat <<EOF | kubectl apply -n production -f -
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: contextual-space
+            annotations:
+              nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+              nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+          spec:
+            ingressClassName: nginx
+            rules:
+              - http:
+                  paths:
+                    - path: /socket.io
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: backend
+                          port:
+                            number: 3001
+                    - path: /health
+                      pathType: Exact
+                      backend:
+                        service:
+                          name: backend
+                          port:
+                            number: 3001
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: frontend
+                          port:
+                            number: 80
+          EOF
+
+      - name: Wait for deployment
+        run: |
+          kubectl rollout status deployment/frontend -n production --timeout=180s
+          kubectl rollout status deployment/backend -n production --timeout=180s
+
+      - name: Deployment Summary
+        run: |
+          echo "✅ Deployment complete!"
+          echo ""
+          echo "📊 Deployment Status:"
+          kubectl get deployments -n production
+          echo ""
+          echo "🌐 Services:"
+          kubectl get services -n production
+          echo ""
+          echo "🔗 Ingress:"
+          kubectl get ingress -n production

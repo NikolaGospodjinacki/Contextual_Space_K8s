@@ -2,13 +2,60 @@
 
 This guide covers deploying PR preview environments to Amazon EKS for production use.
 
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              AWS Cloud                                       │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                            VPC (10.0.0.0/16)                           │  │
+│  │                                                                         │  │
+│  │  ┌─────────────────────┐          ┌─────────────────────┐             │  │
+│  │  │   Public Subnet     │          │   Public Subnet     │             │  │
+│  │  │   (10.0.101.0/24)   │          │   (10.0.102.0/24)   │             │  │
+│  │  │                     │          │                     │             │  │
+│  │  │  ┌──────────────┐   │          │                     │             │  │
+│  │  │  │ NAT Gateway  │   │          │                     │             │  │
+│  │  │  └──────────────┘   │          │                     │             │  │
+│  │  └─────────────────────┘          └─────────────────────┘             │  │
+│  │           │                                                            │  │
+│  │           ▼                                                            │  │
+│  │  ┌─────────────────────┐          ┌─────────────────────┐             │  │
+│  │  │  Private Subnet     │          │  Private Subnet     │             │  │
+│  │  │  (10.0.1.0/24)      │          │  (10.0.2.0/24)      │             │  │
+│  │  │                     │          │                     │             │  │
+│  │  │  ┌──────────────┐   │          │  ┌──────────────┐   │             │  │
+│  │  │  │  EKS Node    │   │          │  │  EKS Node    │   │             │  │
+│  │  │  │  (t3.medium) │   │          │  │  (t3.medium) │   │             │  │
+│  │  │  └──────────────┘   │          │  └──────────────┘   │             │  │
+│  │  └─────────────────────┘          └─────────────────────┘             │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐         │
+│  │  ECR Frontend   │    │  ECR Backend    │    │  EKS Control    │         │
+│  │  Repository     │    │  Repository     │    │  Plane          │         │
+│  └─────────────────┘    └─────────────────┘    └─────────────────┘         │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    │ OIDC Authentication
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           GitHub Actions                                     │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                  │
+│  │ PR Preview   │    │ PR Cleanup   │    │ CI/CD        │                  │
+│  │ Workflow     │    │ Workflow     │    │ Pipeline     │                  │
+│  └──────────────┘    └──────────────┘    └──────────────┘                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
 ## Overview
 
 Production deployment uses:
 - **Amazon EKS**: Managed Kubernetes cluster
 - **Amazon ECR**: Container image registry
-- **AWS Load Balancer Controller**: ALB for ingress
-- **GitHub Actions**: CI/CD with OIDC authentication
+- **Nginx Ingress Controller**: For consistent routing with local setup
+- **AWS Load Balancer Controller**: NLB for ingress controller service
+- **GitHub Actions**: CI/CD with OIDC authentication (no long-lived credentials!)
 - **Terraform**: Infrastructure as Code
 
 ## Cost Estimates
@@ -18,7 +65,7 @@ Production deployment uses:
 | EKS Control Plane | $0.10/hr ($73/mo) | $0.10/hr | Fixed cost |
 | t3.medium nodes (2) | $0.0416/hr ($60/mo) | ~$0.012/hr (~$18/mo) | 70% savings |
 | NAT Gateway | $0.045/hr ($33/mo) | Same | Consider NAT Instance |
-| ALB | $0.0225/hr ($16/mo) | Same | Plus LCU charges |
+| NLB | $0.0225/hr ($16/mo) | Same | Plus LCU charges |
 | **Total** | **~$180/mo** | **~$140/mo** | Idle cluster |
 
 **Cost Optimization Tips:**
@@ -26,13 +73,14 @@ Production deployment uses:
 - Scale to zero when not in use (Karpenter)
 - Share cluster across projects
 - Use NAT Instance instead of NAT Gateway (~$5/mo)
+- Destroy cluster when not demoing
 
 ## Prerequisites
 
 - AWS CLI configured with appropriate permissions
 - Terraform v1.0+
 - kubectl
-- eksctl (optional, for manual operations)
+- GitHub CLI (gh) - for setting secrets
 
 ## Infrastructure Setup
 
@@ -55,22 +103,37 @@ github_repo    = "Contextual_Space_K8s"
 ### 2. Initialize and Apply
 
 ```bash
+cd infrastructure/terraform
 terraform init
 terraform plan
 terraform apply
 ```
 
 This creates:
-- VPC with public/private subnets
-- EKS cluster with managed node group
-- ECR repositories for frontend/backend
-- IAM roles for GitHub Actions OIDC
+- VPC with public/private subnets across 2 AZs
+- EKS cluster with managed node group (2 x t3.medium)
+- ECR repositories for frontend/backend images
+- GitHub OIDC provider for secure authentication
+- IAM roles for GitHub Actions deployments
 - AWS Load Balancer Controller
+- Nginx Ingress Controller (for consistency with local setup)
 
-### 3. Configure kubectl
+### 3. Get Terraform Outputs
 
 ```bash
-aws eks update-kubeconfig --region us-east-1 --name contextual-space-k8s-preview
+terraform output
+```
+
+Save these values for GitHub Actions secrets:
+- `github_actions_role_arn`
+- `ecr_frontend_repository_url`
+- `ecr_backend_repository_url`
+- `cluster_name`
+
+### 4. Configure kubectl
+
+```bash
+aws eks update-kubeconfig --region us-east-1 --name contextual-space-eks-dev
 kubectl get nodes
 ```
 
@@ -78,67 +141,95 @@ kubectl get nodes
 
 ### 1. Add Repository Secrets
 
-Go to GitHub → Settings → Secrets and Variables → Actions:
+Using GitHub CLI:
+
+```bash
+gh secret set AWS_REGION --body "us-east-1"
+gh secret set AWS_ROLE_ARN --body "$(terraform output -raw github_actions_role_arn)"
+gh secret set EKS_CLUSTER_NAME --body "$(terraform output -raw cluster_name)"
+gh secret set ECR_FRONTEND_REPO --body "$(terraform output -raw ecr_frontend_repository_url)"
+gh secret set ECR_BACKEND_REPO --body "$(terraform output -raw ecr_backend_repository_url)"
+```
+
+Or manually via GitHub UI → Settings → Secrets and Variables → Actions:
 
 | Secret | Value | Source |
 |--------|-------|--------|
 | `AWS_REGION` | `us-east-1` | Your choice |
-| `AWS_ROLE_ARN` | `arn:aws:iam::xxx:role/...` | Terraform output |
-| `ECR_FRONTEND_REPO` | `xxx.dkr.ecr...` | Terraform output |
-| `ECR_BACKEND_REPO` | `xxx.dkr.ecr...` | Terraform output |
-| `EKS_CLUSTER_NAME` | `contextual-space-k8s-preview` | Terraform output |
+| `AWS_ROLE_ARN` | `arn:aws:iam::xxx:role/contextual-space-dev-github-actions` | Terraform output |
+| `ECR_FRONTEND_REPO` | `xxx.dkr.ecr.us-east-1.amazonaws.com/contextual-space/frontend` | Terraform output |
+| `ECR_BACKEND_REPO` | `xxx.dkr.ecr.us-east-1.amazonaws.com/contextual-space/backend` | Terraform output |
+| `EKS_CLUSTER_NAME` | `contextual-space-eks-dev` | Terraform output |
 
 ### 2. Workflow Triggers
 
-The GitHub Actions workflow triggers on:
-- **Pull Request opened/synchronized**: Deploy preview
-- **Pull Request closed**: Cleanup preview
+The GitHub Actions workflows trigger on:
+- **PR opened/synchronized**: Deploy preview to `pr-{number}` namespace
+- **PR closed**: Cleanup preview namespace and ECR images
+- **Push to main**: Deploy to `production` namespace
 
 ## Deployment Workflow
 
 ### Automatic (GitHub Actions)
 
-1. Open a Pull Request
-2. GitHub Actions builds and deploys to EKS
-3. Bot comments with preview URL
-4. Merge or close PR to cleanup
+1. Open a Pull Request against `main`
+2. GitHub Actions automatically:
+   - Builds Docker images
+   - Pushes to ECR
+   - Deploys to EKS in `pr-{number}` namespace
+   - Comments on PR with preview URL
+3. Merge or close PR to trigger cleanup
 
 ### Manual Deployment
 
 ```bash
-# Build and push images
-./scripts/eks/build-and-push.sh 42
+# Get cluster credentials
+aws eks update-kubeconfig --region us-east-1 --name contextual-space-eks-dev
 
-# Deploy to EKS
-./scripts/eks/deploy-preview.sh 42
+# Build and push images manually
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin YOUR_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com
 
-# Access via ALB
-kubectl get ingress -n pr-42
+docker build -t YOUR_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/contextual-space/frontend:pr-42 \
+  --build-arg VITE_BASE_PATH=/pr-42/ \
+  ./apps/frontend
+
+docker push YOUR_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/contextual-space/frontend:pr-42
+
+# Apply manifests
+kubectl create namespace pr-42
+kubectl apply -n pr-42 -f k8s/base/
 ```
 
 ## Ingress Configuration
 
-### AWS Load Balancer Controller
+### Nginx Ingress Controller
 
-The ALB Ingress provides:
-- Automatic SSL via ACM
-- Path-based routing
-- Health checks
-- Auto-scaling
+The Terraform setup deploys Nginx Ingress Controller behind an NLB for consistency with the local k3d setup:
 
 ```yaml
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
+  name: contextual-space
   annotations:
-    kubernetes.io/ingress.class: alb
-    alb.ingress.kubernetes.io/scheme: internet-facing
-    alb.ingress.kubernetes.io/target-type: ip
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
 spec:
+  ingressClassName: nginx
   rules:
     - http:
         paths:
-          - path: /pr-42/*
+          - path: /pr-42/socket.io(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 3001
+          - path: /pr-42(/|$)(.*)
+            pathType: ImplementationSpecific
             backend:
               service:
                 name: frontend
@@ -146,17 +237,29 @@ spec:
                   number: 80
 ```
 
+### Get Ingress URL
+
+```bash
+kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+```
+
 ### Custom Domain (Optional)
 
-1. Create ACM certificate
-2. Add Route53 record
-3. Configure ingress:
+1. Create ACM certificate for your domain
+2. Add Route53 CNAME record pointing to NLB hostname
+3. Configure ingress with TLS:
 
 ```yaml
-annotations:
-  alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:...
-  alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
-  alb.ingress.kubernetes.io/ssl-redirect: '443'
+spec:
+  tls:
+    - hosts:
+        - preview.yourdomain.com
+      secretName: tls-secret
+  rules:
+    - host: preview.yourdomain.com
+      http:
+        paths:
+          # ... same as above
 ```
 
 ## Scaling
@@ -174,7 +277,7 @@ spec:
     kind: Deployment
     name: backend
   minReplicas: 1
-  maxReplicas: 3
+  maxReplicas: 5
   metrics:
     - type: Resource
       resource:
@@ -189,7 +292,7 @@ spec:
 For automatic node scaling and spot instance management:
 
 ```bash
-# Install Karpenter
+# Install Karpenter (already configured in Terraform)
 helm install karpenter oci://public.ecr.aws/karpenter/karpenter
 ```
 
@@ -201,16 +304,26 @@ helm install karpenter oci://public.ecr.aws/karpenter/karpenter
 # Enable via eksctl
 eksctl utils update-cluster-logging \
   --enable-types all \
-  --cluster contextual-space-k8s-preview
+  --cluster contextual-space-eks-dev
 ```
 
-### Prometheus + Grafana (Optional)
+### View Logs
 
 ```bash
-helm install prometheus prometheus-community/kube-prometheus-stack
+# Backend logs
+kubectl logs -n pr-42 -l app=backend -f
+
+# Frontend logs
+kubectl logs -n pr-42 -l app=frontend -f
 ```
 
 ## Cleanup
+
+### Delete Single Preview
+
+```bash
+kubectl delete namespace pr-42
+```
 
 ### Delete All Preview Namespaces
 

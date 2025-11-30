@@ -202,6 +202,54 @@ Contextual_Space_K8s/
     └── EKS_SETUP.md           # AWS EKS deployment
 ```
 
+## ☁️ AWS EKS Production Deployment
+
+### Infrastructure Overview
+
+The Terraform configuration creates:
+
+| Resource | Purpose |
+|----------|---------|
+| **VPC** | Isolated network with public/private subnets |
+| **EKS Cluster** | Managed Kubernetes control plane |
+| **Node Group** | 2x t3.medium EC2 instances |
+| **ECR Repositories** | Container image storage |
+| **GitHub OIDC Provider** | Secure keyless authentication |
+| **Nginx Ingress** | Path-based routing with WebSocket support |
+
+### Quick EKS Setup
+
+```bash
+# 1. Configure Terraform
+cd infrastructure/terraform
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your GitHub org/repo
+
+# 2. Deploy infrastructure
+terraform init
+terraform apply
+
+# 3. Configure kubectl
+$(terraform output -raw configure_kubectl)
+
+# 4. Set GitHub secrets
+gh secret set AWS_REGION --body "us-east-1"
+gh secret set AWS_ROLE_ARN --body "$(terraform output -raw github_actions_role_arn)"
+gh secret set EKS_CLUSTER_NAME --body "$(terraform output -raw cluster_name)"
+gh secret set ECR_FRONTEND_REPO --body "$(terraform output -raw ecr_frontend_repository_url)"
+gh secret set ECR_BACKEND_REPO --body "$(terraform output -raw ecr_backend_repository_url)"
+```
+
+### GitHub Actions Workflows
+
+| Workflow | Trigger | Action |
+|----------|---------|--------|
+| `pr-preview.yml` | PR opened/updated | Deploy to `pr-{N}` namespace |
+| `pr-cleanup.yml` | PR closed | Delete namespace + ECR images |
+| `ci-cd.yml` | Push to main | Deploy to `production` namespace |
+
+See [docs/EKS_SETUP.md](docs/EKS_SETUP.md) for detailed instructions.
+
 ## 🎮 Application Features
 
 ### Collaborative Canvas
@@ -242,7 +290,7 @@ annotations:
   nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
   nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
   nginx.ingress.kubernetes.io/use-regex: "true"
-  nginx.ingress.kubernetes.io/rewrite-target: /socket.io/$2
+  nginx.ingress.kubernetes.io/rewrite-target: /$2
 ```
 
 ### Frontend Base Path Injection
@@ -276,13 +324,21 @@ npm install
 npm run dev  # http://localhost:5173
 ```
 
-## ☁️ AWS EKS Deployment (Production)
+## 💰 Cost Considerations
 
-See [docs/EKS_SETUP.md](docs/EKS_SETUP.md) for production deployment with:
-- EKS cluster with managed node groups
-- AWS Load Balancer Controller
-- ECR for container images
-- GitHub Actions with OIDC authentication
+### Local (k3d)
+- **Free** - runs on your local machine
+
+### AWS EKS Production
+| Resource | Monthly Cost |
+|----------|-------------|
+| EKS Control Plane | $73 |
+| 2x t3.medium nodes | $60 |
+| NAT Gateway | $33 |
+| NLB | $16 |
+| **Total** | **~$180/mo** |
+
+💡 **Tip**: Destroy cluster when not demoing to save costs!
 
 ## 🔗 Related Projects
 

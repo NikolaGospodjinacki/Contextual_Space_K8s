@@ -1,0 +1,34 @@
+# =============================================================================
+# Terraform Variables
+# =============================================================================
+
+# Project Configuration
+project_name = "contextual-space"
+environment  = "dev"
+aws_region   = "us-east-1"
+
+# VPC Configuration
+vpc_cidr             = "10.0.0.0/16"
+availability_zones   = ["us-east-1a", "us-east-1b"]
+private_subnet_cidrs = ["10.0.1.0/24", "10.0.2.0/24"]
+public_subnet_cidrs  = ["10.0.101.0/24", "10.0.102.0/24"]
+
+# EKS Configuration
+cluster_version     = "1.28"
+node_instance_types = ["t3.medium"]
+node_desired_size   = 2
+node_min_size       = 1
+node_max_size       = 5
+node_disk_size      = 50
+
+# GitHub Configuration (UPDATE THESE)
+github_org  = "YOUR_GITHUB_USERNAME"
+github_repo = "Contextual_Space_K8s"
+
+# Common Tags
+common_tags = {
+  Project     = "contextual-space"
+  Environment = "dev"
+  ManagedBy   = "terraform"
+  Repository  = "Contextual_Space_K8s"
+}

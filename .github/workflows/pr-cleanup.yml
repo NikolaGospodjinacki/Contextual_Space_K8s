@@ -1,0 +1,91 @@
+# =============================================================================
+# PR Preview Cleanup Workflow
+# =============================================================================
+# Cleans up preview environments when PRs are closed
+# =============================================================================
+
+name: PR Preview Cleanup
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+  ECR_FRONTEND_REPO: ${{ secrets.ECR_FRONTEND_REPO }}
+  ECR_BACKEND_REPO: ${{ secrets.ECR_BACKEND_REPO }}
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  cleanup-preview:
+    name: Cleanup PR Preview
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: github-actions-cleanup-pr-${{ env.PR_NUMBER }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+
+      - name: Delete namespace
+        run: |
+          if kubectl get namespace pr-${{ env.PR_NUMBER }} &>/dev/null; then
+            echo "Deleting namespace pr-${{ env.PR_NUMBER }}..."
+            kubectl delete namespace pr-${{ env.PR_NUMBER }} --timeout=120s
+            echo "✅ Namespace deleted"
+          else
+            echo "⚠️ Namespace pr-${{ env.PR_NUMBER }} not found, skipping"
+          fi
+
+      - name: Cleanup ECR images
+        run: |
+          echo "Cleaning up ECR images for PR-${{ env.PR_NUMBER }}..."
+          
+          # Delete frontend image
+          aws ecr batch-delete-image \
+            --repository-name contextual-space/frontend \
+            --image-ids imageTag=pr-${{ env.PR_NUMBER }} \
+            --region ${{ env.AWS_REGION }} || true
+          
+          # Delete backend image
+          aws ecr batch-delete-image \
+            --repository-name contextual-space/backend \
+            --image-ids imageTag=pr-${{ env.PR_NUMBER }} \
+            --region ${{ env.AWS_REGION }} || true
+          
+          echo "✅ ECR images cleaned up"
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `## 🧹 Preview Environment Cleaned Up
+            
+            The preview environment for PR #${{ env.PR_NUMBER }} has been deleted.
+            
+            | Resource | Status |
+            |----------|--------|
+            | Namespace | ✅ Deleted |
+            | ECR Images | ✅ Deleted |
+            
+            > This is an automated cleanup triggered by closing the PR.`;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
