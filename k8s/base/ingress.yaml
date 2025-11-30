@@ -1,0 +1,48 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: contextual-space
+  labels:
+    app: contextual-space
+  annotations:
+    # Nginx ingress annotations
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    # WebSocket support
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$request_uri"
+    # Enable sticky sessions for WebSocket
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/affinity-mode: "persistent"
+    nginx.ingress.kubernetes.io/session-cookie-name: "contextual-space-session"
+    nginx.ingress.kubernetes.io/session-cookie-path: "/"
+    # Rewrite for proper path handling
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          # Backend API and WebSocket - route /pr-{N}/api and /pr-{N}/socket.io
+          - path: /PR_PATH/socket.io
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 3001
+          - path: /PR_PATH/api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 3001
+          # Frontend - serve the React app
+          - path: /PR_PATH
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80

@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    app: contextual-space
+    component: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: contextual-space
+      component: frontend
+  template:
+    metadata:
+      labels:
+        app: contextual-space
+        component: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: contextual-space-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+              name: http
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10

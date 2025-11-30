@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  labels:
+    app: contextual-space
+    component: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: contextual-space
+      component: backend
+  template:
+    metadata:
+      labels:
+        app: contextual-space
+        component: backend
+    spec:
+      containers:
+        - name: backend
+          image: contextual-space-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3001
+              name: http
+          env:
+            - name: PORT
+              value: "3001"
+            - name: NODE_ENV
+              value: "production"
+            - name: FRONTEND_URL
+              value: "*"
+            # DynamoDB config - for local dev, use local DynamoDB or skip persistence
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: DYNAMODB_TABLE
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: dynamodb-table
+                  optional: true
+            # PR number for data isolation (used as partition key prefix)
+            - name: PR_NUMBER
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 10
