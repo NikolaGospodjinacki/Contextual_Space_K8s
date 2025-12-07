@@ -47,8 +47,8 @@ module "eks" {
   # Node Groups
   eks_managed_node_groups = {
     main = {
-      name            = "${local.name}-node-group"
-      use_name_prefix = true
+      name            = "main-nodes"
+      use_name_prefix = false
 
       instance_types = var.node_instance_types
       capacity_type  = "ON_DEMAND"
@@ -76,8 +76,12 @@ module "eks" {
         AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
       }
 
+      # Use shorter IAM role name
+      iam_role_name            = "cs-eks-node-role"
+      iam_role_use_name_prefix = false
+
       tags = {
-        Name = "${local.name}-node"
+        Name = "cs-node"
       }
     }
   }
