@@ -7,18 +7,21 @@ import { setupSocketHandlers } from './socket/handlers';
 const PORT = process.env.PORT || 3001;
 
 // Allowed origins for CORS
-const allowedOrigins = [
-  'http://localhost:5173',
-  'http://localhost:3000',
-  process.env.FRONTEND_URL,
-].filter(Boolean) as string[];
+// In production (K8s), allow all origins since we're behind ingress
+const allowedOrigins = process.env.NODE_ENV === 'production' 
+  ? '*'
+  : [
+      'http://localhost:5173',
+      'http://localhost:3000',
+      process.env.FRONTEND_URL,
+    ].filter(Boolean) as string[];
 
 // Express setup
 const app = express();
 app.use(cors({
   origin: allowedOrigins,
   methods: ['GET', 'POST', 'OPTIONS'],
-  credentials: true,
+  credentials: allowedOrigins !== '*',
 }));
 app.use(express.json());
 
@@ -35,7 +38,7 @@ const io = new Server(httpServer, {
   cors: {
     origin: allowedOrigins,
     methods: ['GET', 'POST'],
-    credentials: true,
+    credentials: allowedOrigins !== '*',
   },
   transports: ['polling', 'websocket'],
   allowUpgrades: true,
