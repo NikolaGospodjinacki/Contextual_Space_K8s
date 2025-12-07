@@ -19,7 +19,13 @@ const BASE_PATH = import.meta.env.VITE_BASE_PATH || '/';
 // Socket URL - in K8s, we use relative path through ingress
 const getSocketUrl = (): string => {
   const envUrl = import.meta.env.VITE_SOCKET_URL;
-  if (envUrl) return envUrl;
+  // Only use envUrl if it's explicitly set to a non-empty value
+  if (envUrl && envUrl.trim()) return envUrl;
+  
+  // Check if we're in production (not localhost)
+  if (typeof window !== 'undefined' && !window.location.hostname.includes('localhost')) {
+    return window.location.origin;
+  }
   
   // If we have a base path (K8s deployment), use current origin
   if (BASE_PATH !== '/') {
