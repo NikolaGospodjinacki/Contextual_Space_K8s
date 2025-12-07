@@ -29,6 +29,7 @@ export async function setupSocketHandlers(io: TypedServer): Promise<void> {
 
     // Handle user joining
     socket.on('user:join', (username: string) => {
+      console.log(`[Socket] Received user:join from ${socket.id} with username: ${username}`);
       const userId = uuidv4();
       const color = getNextColor();
 
