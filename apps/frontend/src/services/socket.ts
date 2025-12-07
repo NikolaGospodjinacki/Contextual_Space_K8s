@@ -135,7 +135,14 @@ class SocketService {
 
   // User actions
   joinAsUser(username: string): void {
-    this.socket?.emit('user:join', username);
+    if (!this.socket?.connected) {
+      console.warn('[Socket] Cannot join - socket not connected yet');
+      // Try again after a short delay
+      setTimeout(() => this.joinAsUser(username), 100);
+      return;
+    }
+    console.log('[Socket] Sending user:join with username:', username);
+    this.socket.emit('user:join', username);
   }
 
   // TextBox actions
