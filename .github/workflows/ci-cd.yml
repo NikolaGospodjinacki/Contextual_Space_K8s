@@ -230,6 +230,11 @@ jobs:
               nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
               nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
               nginx.ingress.kubernetes.io/websocket-services: "backend"
+              nginx.ingress.kubernetes.io/affinity: "cookie"
+              nginx.ingress.kubernetes.io/session-cookie-name: "SERVERID"
+              nginx.ingress.kubernetes.io/session-cookie-expires: "172800"
+              nginx.ingress.kubernetes.io/session-cookie-max-age: "172800"
+              nginx.ingress.kubernetes.io/session-cookie-path: "/socket.io"
           spec:
             ingressClassName: nginx
             rules:
