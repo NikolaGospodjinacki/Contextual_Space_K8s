@@ -52,18 +52,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Bootstrap mode: Use AWS Access Keys (for initial infrastructure creation)
-      # After bootstrap: Use OIDC role (AWS_TERRAFORM_ROLE_ARN)
-      - name: Configure AWS credentials (OIDC)
-        if: ${{ secrets.AWS_TERRAFORM_ROLE_ARN != '' }}
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
-          role-session-name: github-actions-terraform
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Configure AWS credentials (Access Keys - Bootstrap)
-        if: ${{ secrets.AWS_TERRAFORM_ROLE_ARN == '' }}
+      # Use AWS Access Keys for authentication
+      # After infrastructure is created, you can switch to OIDC
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
