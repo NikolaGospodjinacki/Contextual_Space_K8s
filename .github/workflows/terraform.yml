@@ -1,0 +1,162 @@
+# =============================================================================
+# Terraform Infrastructure Workflow
+# =============================================================================
+# Deploys AWS infrastructure (VPC, EKS, ECR, IAM) via Terraform
+# - On PR: runs terraform plan
+# - On main: runs terraform apply
+# =============================================================================
+
+name: Terraform Infrastructure
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infrastructure/terraform/**'
+      - '.github/workflows/terraform.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'infrastructure/terraform/**'
+      - '.github/workflows/terraform.yml'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Terraform action to perform'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+env:
+  AWS_REGION: us-east-1
+  TF_WORKING_DIR: infrastructure/terraform
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  terraform:
+    name: Terraform
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Bootstrap mode: Use AWS Access Keys (for initial infrastructure creation)
+      # After bootstrap: Use OIDC role (AWS_TERRAFORM_ROLE_ARN)
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ secrets.AWS_TERRAFORM_ROLE_ARN != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+          role-session-name: github-actions-terraform
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure AWS credentials (Access Keys - Bootstrap)
+        if: ${{ secrets.AWS_TERRAFORM_ROLE_ARN == '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+
+      - name: Terraform Plan
+        id: plan
+        if: github.event_name == 'pull_request' || github.event.inputs.action == 'plan'
+        run: |
+          terraform plan -no-color -out=tfplan 2>&1 | tee plan_output.txt
+          echo "PLAN_OUTPUT<<EOF" >> $GITHUB_OUTPUT
+          cat plan_output.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Comment PR with Plan
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `#### Terraform Format 🖌 \`${{ steps.fmt.outcome }}\`
+            #### Terraform Init ⚙️ \`${{ steps.init.outcome }}\`
+            #### Terraform Validate 🤖 \`${{ steps.validate.outcome }}\`
+            #### Terraform Plan 📖 \`${{ steps.plan.outcome }}\`
+
+            <details><summary>Show Plan</summary>
+
+            \`\`\`terraform
+            ${{ steps.plan.outputs.PLAN_OUTPUT }}
+            \`\`\`
+
+            </details>
+
+            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+
+      - name: Terraform Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+      - name: Terraform Apply
+        if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || github.event.inputs.action == 'apply'
+        run: terraform apply -auto-approve
+
+      - name: Terraform Destroy
+        if: github.event.inputs.action == 'destroy'
+        run: terraform destroy -auto-approve
+
+      - name: Output Terraform Values
+        if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || github.event.inputs.action == 'apply'
+        run: |
+          echo "## Terraform Outputs" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Output | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Cluster Name | $(terraform output -raw cluster_name) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cluster Endpoint | $(terraform output -raw cluster_endpoint) |" >> $GITHUB_STEP_SUMMARY
+          echo "| ECR Frontend | $(terraform output -raw ecr_frontend_repository_url) |" >> $GITHUB_STEP_SUMMARY
+          echo "| ECR Backend | $(terraform output -raw ecr_backend_repository_url) |" >> $GITHUB_STEP_SUMMARY
+          echo "| GitHub Actions Role | $(terraform output -raw github_actions_role_arn) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Configure these GitHub Secrets:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "AWS_REGION: ${{ env.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
+          echo "AWS_ROLE_ARN: $(terraform output -raw github_actions_role_arn)" >> $GITHUB_STEP_SUMMARY
+          echo "EKS_CLUSTER_NAME: $(terraform output -raw cluster_name)" >> $GITHUB_STEP_SUMMARY
+          echo "ECR_FRONTEND_REPO: $(terraform output -raw ecr_frontend_repository_url)" >> $GITHUB_STEP_SUMMARY
+          echo "ECR_BACKEND_REPO: $(terraform output -raw ecr_backend_repository_url)" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
