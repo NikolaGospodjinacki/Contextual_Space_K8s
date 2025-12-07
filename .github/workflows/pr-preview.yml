@@ -162,7 +162,7 @@ jobs:
                   - name: frontend
                     image: ${{ env.ECR_FRONTEND_REPO }}:pr-${{ env.PR_NUMBER }}
                     ports:
-                      - containerPort: 80
+                      - containerPort: 8080
                     resources:
                       requests:
                         memory: "64Mi"
@@ -180,7 +180,7 @@ jobs:
               app: frontend
             ports:
               - port: 80
-                targetPort: 80
+                targetPort: 8080
           EOF
 
           # Deploy Ingress
@@ -194,6 +194,10 @@ jobs:
               nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
               nginx.ingress.kubernetes.io/use-regex: "true"
               nginx.ingress.kubernetes.io/rewrite-target: /\$2
+              nginx.ingress.kubernetes.io/websocket-services: "backend"
+              nginx.ingress.kubernetes.io/affinity: "cookie"
+              nginx.ingress.kubernetes.io/session-cookie-name: "SERVERID"
+              nginx.ingress.kubernetes.io/session-cookie-path: "/pr-${{ env.PR_NUMBER }}/socket.io"
           spec:
             ingressClassName: nginx
             rules:
