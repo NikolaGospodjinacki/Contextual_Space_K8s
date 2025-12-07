@@ -16,6 +16,7 @@ export function useSocket(username: string) {
       try {
         await socketService.connect();
         setIsConnected(true);
+        setError(null); // Clear any previous errors on successful connection
         socketService.joinAsUser(username);
       } catch (err) {
         setError('Failed to connect to server');
