@@ -183,17 +183,17 @@ jobs:
                 targetPort: 8080
           EOF
 
-          # Deploy Ingress
+          # Deploy Ingress for socket.io (no rewrite needed)
           cat <<EOF | kubectl apply -n pr-${{ env.PR_NUMBER }} -f -
           apiVersion: networking.k8s.io/v1
           kind: Ingress
           metadata:
-            name: contextual-space
+            name: contextual-space-socket
             annotations:
               nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
               nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
               nginx.ingress.kubernetes.io/use-regex: "true"
-              nginx.ingress.kubernetes.io/rewrite-target: /\$2
+              nginx.ingress.kubernetes.io/rewrite-target: /socket.io/\$2
               nginx.ingress.kubernetes.io/websocket-services: "backend"
               nginx.ingress.kubernetes.io/affinity: "cookie"
               nginx.ingress.kubernetes.io/session-cookie-name: "SERVERID"
@@ -210,6 +210,24 @@ jobs:
                           name: backend
                           port:
                             number: 3001
+          EOF
+
+          # Deploy Ingress for frontend and health (with rewrite)
+          cat <<EOF | kubectl apply -n pr-${{ env.PR_NUMBER }} -f -
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: contextual-space
+            annotations:
+              nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+              nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+              nginx.ingress.kubernetes.io/use-regex: "true"
+              nginx.ingress.kubernetes.io/rewrite-target: /\$2
+          spec:
+            ingressClassName: nginx
+            rules:
+              - http:
+                  paths:
                     - path: /pr-${{ env.PR_NUMBER }}/health
                       pathType: Exact
                       backend:
