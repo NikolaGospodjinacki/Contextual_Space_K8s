@@ -49,10 +49,20 @@ const SOCKET_URL = getSocketUrl();
 class SocketService {
   private socket: Socket | null = null;
   private listeners: Map<string, Set<Function>> = new Map();
+  private username: string | null = null;
 
-  connect(): Promise<void> {
+  connect(username?: string): Promise<void> {
+    if (username) {
+      this.username = username;
+    }
+
     return new Promise((resolve, reject) => {
       if (this.socket?.connected) {
+        // Already connected, just send join if we have username
+        if (this.username) {
+          console.log('[Socket] Already connected, sending user:join with username:', this.username);
+          this.socket.emit('user:join', this.username);
+        }
         resolve();
         return;
       }
@@ -68,6 +78,11 @@ class SocketService {
 
       this.socket.on('connect', () => {
         console.log('[Socket] Connected:', this.socket?.id);
+        // Send user:join immediately upon connection
+        if (this.username) {
+          console.log('[Socket] Sending user:join immediately with username:', this.username);
+          this.socket?.emit('user:join', this.username);
+        }
         resolve();
       });
 

@@ -14,10 +14,9 @@ export function useSocket(username: string) {
   useEffect(() => {
     const connect = async () => {
       try {
-        await socketService.connect();
+        await socketService.connect(username); // Pass username to connect
         setIsConnected(true);
         setError(null); // Clear any previous errors on successful connection
-        socketService.joinAsUser(username);
       } catch (err) {
         setError('Failed to connect to server');
         console.error(err);
